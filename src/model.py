@@ -152,4 +152,20 @@ class CascadePyramidNet(nn.Module):
         x = self.body_net(x)
         x = self.global_net(x)
         x = self.refine_net(x)
-        return self.out(torch.cat(x, dim=1))
+        return x[0], self.out(torch.cat(x, dim=1))
+
+
+class LossWithMask(nn.Module):
+    def __init__(self, loss_fn):
+        super().__init__()
+        self.loss_fn = loss_fn
+
+    def forward(self, y_pred, y_true):
+        y_pred_g, y_pred_r = y_pred
+        y_true, mask, size = y_true
+        y_pred_g = y_pred_g * mask
+        y_pred_r = y_pred_r * mask
+        loss = self.loss_fn(y_pred_g, y_true) + self.loss_fn(y_pred_r, y_true)
+        n, c, _, _ = mask.shape
+        loss *= n * c / mask.sum()
+        return loss
