@@ -21,21 +21,86 @@ class ApplyTo:
         return m
 
 
-class Attributes:
+class KeyPoints:
     """
-    convert fashion ai attributes keypoints to a numpy array, also make x,y start from 0 instead of 1
+    take fashion ai keypoints and generate a array of keypoints in the order given by kpt_names,
+    only keypoints in kpt_names are considered
+    also make x,y start from 0 instead of 1
     """
 
-    def __init__(self, attr_names):
-        self.attr_names = attr_names
+    def __init__(self, kpt_names):
+        self.kpt_names = kpt_names
 
     def __call__(self, item):
-        attrs = np.zeros((len(self.attr_names), 3))
-        for i, attr_name in enumerate(self.attr_names):
-            attrs[i] = item[attr_name]
+        kpts = np.zeros((len(self.kpt_names), 3))
+        for i, attr_name in enumerate(self.kpt_names):
+            kpts[i] = item[attr_name]
         # attribute keypoint x,y is start from 1
-        attrs[:, :2] -= 1
-        item["attrs"] = attrs
+        kpts[:, :2] -= 1
+        item["kpts"] = kpts
+        return item
+
+
+class Mask:
+    """
+    take an image category and generate a list of mask for each kpt in the order given by kpt_names
+    only keypoints in kpt_names are considered
+    """
+
+    # keypoints of each category
+    kpt_names_by_cat = {
+        'blouse': {
+            'neckline_left', 'neckline_right', 'center_front', 'shoulder_left', 'shoulder_right',
+            'armpit_left', 'armpit_right', 'cuff_left_in', 'cuff_left_out', 'cuff_right_in',
+            'cuff_right_out', 'top_hem_left', 'top_hem_right'
+        },
+        'outwear': {
+            'neckline_left', 'neckline_right', 'shoulder_left', 'shoulder_right', 'armpit_left',
+            'armpit_right', 'waistline_left', 'waistline_right', 'cuff_left_in', 'cuff_left_out',
+            'cuff_right_in', 'cuff_right_out', 'top_hem_left', 'top_hem_right'
+        },
+        'trousers': {
+            'waistband_left', 'waistband_right', 'crotch', 'bottom_left_in', 'bottom_left_out',
+            'bottom_right_in', 'bottom_right_out'
+        },
+        'skirt': {
+            'waistband_left', 'waistband_right', 'hemline_left', 'hemline_right'
+        },
+        'dress': {
+            'neckline_left', 'neckline_right', 'center_front', 'shoulder_left', 'shoulder_right', 'armpit_left',
+            'armpit_right', 'waistline_left', 'waistline_right', 'cuff_left_in', 'cuff_left_out', 'cuff_right_in',
+            'cuff_right_out', 'hemline_left', 'hemline_right'
+        }}
+
+    def __init__(self, kpt_names):
+        self.kpt_names = kpt_names
+
+    def __call__(self, item):
+        # this will do a proper broadcasting for heatmap(C,H,W)
+        mask = torch.zeros((len(self.kpt_names), 1, 1))
+        kpt_names = self.kpt_names_by_cat[item["image_category"]]
+        for i, kpt_name in enumerate(self.kpt_names):
+            if kpt_name in kpt_names:
+                mask[i] = 1
+
+        item["mask"] = mask
+        return item
+
+
+class AnnotatedMask:
+    """take a list of keyoints generate a list of mask of annotated keypoints in the order given by kpt_names"""
+
+    def __init__(self, kpt_names):
+        self.kpt_names = kpt_names
+
+    def __call__(self, item):
+        mask = torch.zeros((len(self.kpt_names), 1, 1))
+        for i, kpt_name in enumerate(self.kpt_names):
+            kpt = item[kpt_name]
+            if kpt[2] != -1:
+                mask[i] = 1
+
+        item["mask"] = mask
         return item
 
 
@@ -45,26 +110,25 @@ class Resize(transforms.Resize):
         ow, oh = item["image"].size
         item["image"] = super().__call__(item["image"])
         w, h = item["image"].size
-        item["attrs"][:, 0] *= w / ow
-        item["attrs"][:, 1] *= h / oh
+        item["kpts"][:, 0] *= w / ow
+        item["kpts"][:, 1] *= h / oh
         return item
 
 
 class Heatmap:
     """
-    take list of fashion ai attributes to generate a heatmap
+    take list of fashion ai keypoints to generate a heatmap
     """
 
     def __call__(self, item):
         scale = 4
         w, h = item["image"].size
-        attrs = item["attrs"].astype(np.int32)
-        heatmap = torch.zeros(len(attrs), h // scale, w // scale)
-        for i, attr in enumerate(attrs):
+        kpts = item["kpts"].astype(np.int32)
+        heatmap = torch.zeros(len(kpts), h // scale, w // scale)
+        for i, attr in enumerate(kpts):
             if attr[2] != -1:
                 x, y, visibility = attr
                 heatmap[i, y // scale, x // scale] = 1
-                # heatmap[i, y, x] = visibility
         item["heatmap"] = heatmap
         return item
 
@@ -82,10 +146,10 @@ def fashion_ai_dataset(root, anno_csv):
 
     dataset = FashionAIDataset(root, anno_csv)
 
-    attr_names = dataset.df.columns[2:2 + 24]
+    kpt_names = dataset.df.columns[2:2 + 24]
 
     transform = transforms.Compose([
-        Attributes(attr_names),
+        KeyPoints(kpt_names),
         Resize((256, 256)),
         Heatmap(),
         ApplyTo("image", transforms.Compose([
@@ -93,7 +157,8 @@ def fashion_ai_dataset(root, anno_csv):
             transforms.Normalize((0.485, 0.456, 0.406),
                                  (0.229, 0.224, 0.225)),
         ])),
-        lambda item: (item["image"], item["heatmap"]),
+        AnnotatedMask(kpt_names),
+        lambda item: (item["image"], (item["mask"], item["heatmap"])),
     ])
 
     dataset = TransformDataset(dataset, transform)
