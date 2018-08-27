@@ -1,8 +1,19 @@
+import collections
 import time
 
 import torch
 import torch.utils.data as data
 from torch.utils.data.dataset import random_split
+
+
+def to_device(item, device):
+    if isinstance(item, torch.Tensor):
+        return item.to(device)
+    elif isinstance(item, collections.Mapping):
+        return {k: to_device(v, device) for k, v in item.items()}
+    elif isinstance(item, collections.Sequence):
+        return [to_device(d, device) for d in item]
+    raise TypeError("not supported data type")
 
 
 class Solver:
@@ -44,8 +55,8 @@ class Solver:
             n_cnt = print_cnt
             start_time = time.time()
             for x, y in loader_train:
-                x = x.to(self.device)
-                y = y.to(self.device)
+                x = to_device(x, self.device)
+                y = to_device(y, self.device)
 
                 y_pred = self.model(x)
                 loss = self.loss_fn(y_pred, y)
