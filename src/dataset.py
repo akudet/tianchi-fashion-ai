@@ -1,5 +1,6 @@
 import os
 
+import numpy as np
 import pandas as pd
 import torch
 import torch.utils.data as data
@@ -7,6 +8,9 @@ import torchvision.transforms as transforms
 
 
 class ApplyTo:
+    """
+    apply a specific function to an element of a map
+    """
 
     def __init__(self, key, func):
         self.func = func
@@ -17,34 +21,78 @@ class ApplyTo:
         return m
 
 
-class AttributesHeatmap:
+class Attributes:
     """
-    take list of fashion ai attributes to generate a heatmap
+    convert fashion ai attributes keypoints to a numpy array, also make x,y start from 0 instead of 1
     """
 
     def __init__(self, attr_names):
         self.attr_names = attr_names
 
     def __call__(self, item):
-        w, h = item["image"].size
-        heatmap = torch.zeros((len(self.attr_names), h, w))
+        attrs = np.zeros((len(self.attr_names), 3))
         for i, attr_name in enumerate(self.attr_names):
-            attr = item[attr_name]
+            attrs[i] = item[attr_name]
+        # attribute keypoint x,y is start from 1
+        attrs[:, :2] -= 1
+        item["attrs"] = attrs
+        return item
+
+
+class Resize(transforms.Resize):
+
+    def __call__(self, item):
+        ow, oh = item["image"].size
+        item["image"] = super().__call__(item["image"])
+        w, h = item["image"].size
+        item["attrs"][:, 0] *= w / ow
+        item["attrs"][:, 1] *= h / oh
+        return item
+
+
+class Heatmap:
+    """
+    take list of fashion ai attributes to generate a heatmap
+    """
+
+    def __call__(self, item):
+        scale = 4
+        w, h = item["image"].size
+        attrs = item["attrs"].astype(np.int32)
+        heatmap = torch.zeros(len(attrs), h // scale, w // scale)
+        for i, attr in enumerate(attrs):
             if attr[2] != -1:
                 x, y, visibility = attr
-                heatmap[i, y, x] = 1
+                heatmap[i, y // scale, x // scale] = 1
                 # heatmap[i, y, x] = visibility
-
         item["heatmap"] = heatmap
         return item
 
 
 def fashion_ai_dataset(root, anno_csv):
+    """
+    factor method used to get fashion ai dataset for training and testing
+
+    :param root:
+        the root of image folder, which the image_id(relative_path) refer to
+    :param anno_csv:
+        the path of annotation csv file
+    :return:
+    """
+
     dataset = FashionAIDataset(root, anno_csv)
 
+    attr_names = dataset.df.columns[2:2 + 24]
+
     transform = transforms.Compose([
-        AttributesHeatmap(dataset.df.columns[2:2 + 24]),
-        ApplyTo("image", transforms.ToTensor()),
+        Attributes(attr_names),
+        Resize((256, 256)),
+        Heatmap(),
+        ApplyTo("image", transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.485, 0.456, 0.406),
+                                 (0.229, 0.224, 0.225)),
+        ])),
         lambda item: (item["image"], item["heatmap"]),
     ])
 
@@ -69,7 +117,7 @@ class FashionAIDataset(data.Dataset):
         self.loader = default_loader
 
     def __getitem__(self, index):
-        item = self.df.iloc[index].to_dict()
+        item = self.df.iloc[int(index)].to_dict()
         item["image"] = self.loader(item["image_path"])
         return item
 
