@@ -133,6 +133,35 @@ class Heatmap:
         return item
 
 
+class HeatmapToKeyPoints:
+
+    def __init__(self, threshold=0.5):
+        self.threshold = threshold
+
+    def __call__(self, heatmap, mask, size):
+        N, C, H, W = heatmap.shape
+        kpts = heatmap.new_zeros((N, C, 3), torch.float32)
+        heatmap = heatmap.view(N, C, -1)
+        confidence, position = torch.max(heatmap, dim=2)
+        confidence = confidence.view(N, C)
+        kpts[:, :, 2] = confidence > self.threshold
+        kpts[:, :, 0] = (position % W)
+        kpts[:, :, 1] = (position // H)
+        size = size.to(torch.float32)
+        size[:, 0] /= W
+        size[:, 1] /= H
+        kpts[:, :, :2] *= size
+        kpts[:, :, :2] += size / 2
+        # target x,y start from 1, in training x,y is start from 0, see KeyPoints class
+        kpts[:, :, :2] += 1
+
+        mask = mask.view(N, C, 1)
+        kpts *= mask
+        kpts += mask - 1
+        kpts = kpts.to(torch.int32)
+        return kpts
+
+
 def fashion_ai_dataset(root, anno_csv):
     """
     factor method used to get fashion ai dataset for training and testing
@@ -158,7 +187,7 @@ def fashion_ai_dataset(root, anno_csv):
                                  (0.229, 0.224, 0.225)),
         ])),
         AnnotatedMask(kpt_names),
-        lambda item: (item["image"], (item["mask"], item["heatmap"])),
+        lambda item: (item["image"], (item["heatmap"], item["mask"], item["size"])),
     ])
 
     dataset = TransformDataset(dataset, transform)
@@ -184,6 +213,7 @@ class FashionAIDataset(data.Dataset):
     def __getitem__(self, index):
         item = self.df.iloc[int(index)].to_dict()
         item["image"] = self.loader(item["image_path"])
+        item["size"] = torch.Tensor(item["image"].size)
         return item
 
     def __len__(self):
