@@ -148,8 +148,9 @@ class HeatmapToKeyPoints:
         kpts[:, :, 0] = (position % W)
         kpts[:, :, 1] = (position // H)
         size = size.to(torch.float32)
-        size[:, 0] /= W
-        size[:, 1] /= H
+        size = size.view(N, 1, 2)
+        size[:, :, 0] /= W
+        size[:, :, 1] /= H
         kpts[:, :, :2] *= size
         kpts[:, :, :2] += size / 2
         # target x,y start from 1, in training x,y is start from 0, see KeyPoints class
@@ -162,7 +163,7 @@ class HeatmapToKeyPoints:
         return kpts
 
 
-def fashion_ai_dataset(root, anno_csv):
+def fashion_ai_dataset(root, anno_csv, is_train=True):
     """
     factor method used to get fashion ai dataset for training and testing
 
@@ -170,32 +171,58 @@ def fashion_ai_dataset(root, anno_csv):
         the root of image folder, which the image_id(relative_path) refer to
     :param anno_csv:
         the path of annotation csv file
+    :param is_train:
+        if True, item will be (image, (heatmap, mask, origin_img_size)), otherwise (image, (mask, origin_img_size))
     :return:
     """
 
     dataset = FashionAIDataset(root, anno_csv)
-
-    kpt_names = dataset.df.columns[2:2 + 24]
-
-    transform = transforms.Compose([
-        KeyPoints(kpt_names),
-        Resize((256, 256)),
-        Heatmap(),
-        ApplyTo("image", transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.485, 0.456, 0.406),
-                                 (0.229, 0.224, 0.225)),
-        ])),
-        AnnotatedMask(kpt_names),
-        lambda item: (item["image"], (item["heatmap"], item["mask"], item["size"])),
-    ])
+    kpt_names = dataset.kpt_names
+    if is_train:
+        transform = transforms.Compose([
+            KeyPoints(kpt_names),
+            Resize((256, 256)),
+            Heatmap(),
+            ApplyTo("image", transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize((0.485, 0.456, 0.406),
+                                     (0.229, 0.224, 0.225)),
+            ])),
+            AnnotatedMask(kpt_names),
+            lambda item: (item["image"], (item["heatmap"], item["mask"], item["size"])),
+        ])
+    else:
+        transform = transforms.Compose([
+            ApplyTo("image", transforms.Compose([
+                transforms.Resize((256, 256)),
+                transforms.ToTensor(),
+                transforms.Normalize((0.485, 0.456, 0.406),
+                                     (0.229, 0.224, 0.225)),
+            ])),
+            Mask(kpt_names),
+            lambda item: (item["image"], (item["mask"], item["size"])),
+        ])
 
     dataset = TransformDataset(dataset, transform)
+
 
     return dataset
 
 
 class FashionAIDataset(data.Dataset):
+    kpt_names = [
+        "neckline_left", "neckline_right",
+        "center_front",
+        "shoulder_left", "shoulder_right",
+        "armpit_left", "armpit_right",
+        "waistline_left", "waistline_right",
+        "cuff_left_in", "cuff_left_out", "cuff_right_in", "cuff_right_out",
+        "top_hem_left", "top_hem_right",
+        "waistband_left", "waistband_right",
+        "hemline_left", "hemline_right",
+        "crotch",
+        "bottom_left_in", "bottom_left_out", "bottom_right_in", "bottom_right_out",
+    ]
 
     def __init__(self, root, anno_csv):
         from torchvision.datasets.folder import default_loader
